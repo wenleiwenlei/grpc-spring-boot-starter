@@ -236,6 +236,8 @@ public class GrpcServerProperties {
          */
         private String trustCertCollectionPath = null;
 
+        private String privateKeyPassword = null;
+
         /**
          * Specifies the cipher suite. If {@code null} or empty it will use the system's default cipher suite.
          *

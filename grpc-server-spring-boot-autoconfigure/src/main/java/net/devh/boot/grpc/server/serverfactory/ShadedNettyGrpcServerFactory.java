@@ -19,6 +19,8 @@ package net.devh.boot.grpc.server.serverfactory;
 
 import java.io.File;
 import java.net.InetSocketAddress;
+import java.security.PrivateKey;
+import java.security.cert.X509Certificate;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
@@ -29,9 +31,13 @@ import com.google.common.net.InetAddresses;
 import io.grpc.netty.shaded.io.grpc.netty.GrpcSslContexts;
 import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder;
 import io.grpc.netty.shaded.io.netty.handler.ssl.SslContextBuilder;
+import io.grpc.netty.shaded.io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import net.devh.boot.grpc.server.config.ClientAuth;
 import net.devh.boot.grpc.server.config.GrpcServerProperties;
 import net.devh.boot.grpc.server.config.GrpcServerProperties.Security;
+import net.devh.boot.grpc.server.util.CertificateUtils;
+import net.devh.boot.grpc.server.util.KeyPairUtils;
+import org.apache.commons.lang3.StringUtils;
 
 /**
  * Factory for shaded netty based grpc servers.
@@ -79,34 +85,44 @@ public class ShadedNettyGrpcServerFactory
     // Keep this in sync with NettyGrpcServerFactory#configureSecurity
     protected void configureSecurity(final NettyServerBuilder builder) {
         final Security security = this.properties.getSecurity();
-        if (security.isEnabled()) {
-            final File certificateChainFile = toCheckedFile("certificateChain", security.getCertificateChainPath());
-            final File privateKeyFile = toCheckedFile("privateKey", security.getPrivateKeyPath());
-            final SslContextBuilder sslContextBuilder = GrpcSslContexts.forServer(certificateChainFile, privateKeyFile);
-
-            if (security.getClientAuth() != ClientAuth.NONE) {
-                sslContextBuilder.clientAuth(of(security.getClientAuth()));
-
-                final String trustCertCollectionPath = security.getTrustCertCollectionPath();
-                if (trustCertCollectionPath != null && !trustCertCollectionPath.isEmpty()) {
-                    final File trustCertCollectionFile = toCheckedFile("trustCertCollection", trustCertCollectionPath);
-                    sslContextBuilder.trustManager(trustCertCollectionFile);
+        try {
+            if (security.isEnabled()) {
+                final File certificateChainFile = toCheckedFile("certificateChain", security.getCertificateChainPath());
+                final File privateKeyFile = toCheckedFile("privateKey", security.getPrivateKeyPath());
+                final String privateKeyPassword = security.getPrivateKeyPassword();
+                SslContextBuilder sslContextBuilder;
+                if (StringUtils.isBlank(privateKeyPassword)) {
+                    sslContextBuilder = SslContextBuilder.forServer(certificateChainFile, privateKeyFile);
+                } else {
+                    PrivateKey privateKey = KeyPairUtils.readEncryptedKeyFromFile(privateKeyPassword,privateKeyFile);
+                    X509Certificate cert = CertificateUtils.readCertificateFromFile(certificateChainFile);
+                    sslContextBuilder = GrpcSslContexts.configure(SslContextBuilder.forServer(privateKey, privateKeyPassword,cert));
                 }
-            }
+                if (security.getClientAuth() != ClientAuth.NONE) {
+                    sslContextBuilder.clientAuth(of(security.getClientAuth()));
 
-            if (security.getCiphers() != null && !security.getCiphers().isEmpty()) {
-                sslContextBuilder.ciphers(security.getCiphers());
-            }
+                    final String trustCertCollectionPath = security.getTrustCertCollectionPath();
+                    if (trustCertCollectionPath != null && !trustCertCollectionPath.isEmpty()) {
+                        final File trustCertCollectionFile = toCheckedFile("trustCertCollection", trustCertCollectionPath);
+                        sslContextBuilder.trustManager(trustCertCollectionFile);
+                    } else {
+                        //信任所有的证书
+                        sslContextBuilder.trustManager(InsecureTrustManagerFactory.INSTANCE);
+                    }
+                }
 
-            if (security.getProtocols() != null && security.getProtocols().length > 0) {
-                sslContextBuilder.protocols(security.getProtocols());
-            }
+                if (security.getCiphers() != null && !security.getCiphers().isEmpty()) {
+                    sslContextBuilder.ciphers(security.getCiphers());
+                }
 
-            try {
+                if (security.getProtocols() != null && security.getProtocols().length > 0) {
+                    sslContextBuilder.protocols(security.getProtocols());
+                }
+
                 builder.sslContext(sslContextBuilder.build());
-            } catch (final SSLException e) {
-                throw new IllegalStateException("Failed to create ssl context for grpc server", e);
             }
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to create ssl context for grpc server", e);
         }
     }
 
@@ -128,5 +144,4 @@ public class ShadedNettyGrpcServerFactory
                 throw new IllegalArgumentException("Unsupported ClientAuth: " + clientAuth);
         }
     }
-
 }
